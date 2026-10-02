@@ -578,3 +578,11 @@ td.more-cell { text-align: center !important; padding: 12px !important; }
 .pay-opts input { margin-top: 3px; }
 .secret-state { font-size: 12px; margin-top: 4px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; }
+
+/* Phones: a card heading keeps its title and button on one line; a description beside them drops below, full width. */
+@media (max-width: 720px) {
+  .card-head { flex-wrap: wrap; row-gap: 4px; }
+  .card-head > .small { order: 3; flex-basis: 100%; }
+}
+/* Fields that upper-case what is typed (coupon codes) keep a normal-case hint. */
+input::placeholder { text-transform: none; }
