@@ -1,6 +1,7 @@
 // Company profile and logo, and the signed-in person's own account: password,
 // notifications, devices. Under /admin/account the platform admin gets only the latter.
-import { get, post, patch, del, upload } from '../api.js';
+// Managers and admins also see the invoice details (billing address, bank, UPI, numbering).
+import { get, post, put, patch, del, upload } from '../api.js';
 import { store, $, esc, toast, toastError, busy, formData } from '../ui.js';
 import { can } from '../app.js';
 import { icon } from '../icons.js';
@@ -118,6 +119,70 @@ export async function render(root) {
     const f = e.currentTarget;
     busy($('button[type=submit]', f), async () => {
       try { await post('/auth/password', formData(f)); f.reset(); toast('Password changed', 'ok'); } catch (err) { toastError(err); }
+    });
+  });
+  if (!personal && can('manager')) invoiceDetails(root).catch(toastError);
+}
+
+/** What prints on every invoice: billing address, GST, bank, UPI, numbering. Admins edit it. */
+async function invoiceDetails(root) {
+  const r = await get('/invoices/settings');
+  const s = r.settings;
+  const sel = r.seller;
+  const ro = can('admin') ? '' : ' disabled';
+  const v = (x) => esc(x || '');
+  const card = document.createElement('form');
+  card.className = 'card';
+  card.id = 'invoice-details';
+  card.noValidate = true;
+  card.style.gridColumn = '1 / -1';
+  card.innerHTML = `
+    <div class="card-head"><h3>${icon('file')} Invoice details</h3><span class="small muted">Printed on every invoice you raise. ${can('admin') ? '' : 'Only admins can change them.'}</span></div>
+    <div class="card-pad">
+      <div class="grid-2">
+        <label class="field"><span>Legal name on invoices</span><input type="text" name="legal_name" maxlength="160" value="${v(s.legal_name)}" placeholder="${v(sel.name)}"${ro}></label>
+        <label class="field"><span>State (for GST place of supply)</span><select name="state"${ro}><option value="">—</option>${r.states.map(([c, n]) => '<option value="' + c + '"' + (c === s.state ? ' selected' : '') + '>' + c + ' · ' + esc(n) + '</option>').join('')}</select></label>
+      </div>
+      <label class="field mt"><span>Billing address</span><textarea name="address" rows="2" maxlength="500" placeholder="${v(sel.address)}"${ro}>${v(s.address)}</textarea></label>
+      <div class="grid-4 mt">
+        <label class="field"><span>PAN</span><input type="text" name="pan" maxlength="10" value="${v(s.pan)}" style="text-transform:uppercase"${ro}></label>
+        <label class="field"><span>Email on invoices</span><input type="email" name="email" maxlength="190" value="${v(s.email)}" placeholder="${v(sel.email)}"${ro}></label>
+        <label class="field"><span>Phone on invoices</span><input type="tel" name="phone" maxlength="40" value="${v(s.phone)}" placeholder="${v(sel.phone)}"${ro}></label>
+        <div class="field"><span>GSTIN</span><div class="small" style="padding-top:8px">${sel.gstin ? '<b>' + esc(sel.gstin) + '</b> <span class="faint">(company profile)</span>' : '<span class="faint">Not set. Add it to the company profile above to charge GST.</span>'}</div></div>
+      </div>
+      <div class="form-section">Numbers, GST and terms</div>
+      <div class="grid-4">
+        <label class="field"><span>Number prefix</span><input type="text" name="prefix" maxlength="5" value="${v(s.prefix)}" style="text-transform:uppercase"${ro}></label>
+        <label class="field"><span>Next number (${esc(r.series)})</span><input type="number" name="next_number" min="1" value="${r.next_number}"${ro}></label>
+        <label class="field"><span>Default GST rate</span><select name="gst_rate"${ro}>${[0, 5, 12, 18, 28].map((x) => '<option value="' + x + '"' + (x === Number(s.gst_rate) ? ' selected' : '') + '>' + x + '%</option>').join('')}</select></label>
+        <label class="field"><span>SAC code</span><input type="text" name="sac" maxlength="8" value="${v(s.sac)}" placeholder="998366"${ro}></label>
+        <label class="field"><span>Payment terms (days)</span><input type="number" name="terms_days" min="0" max="365" value="${s.terms_days}"${ro}></label>
+        <label class="field" style="grid-column:span 3"><span>Signed by</span><input type="text" name="signatory" maxlength="120" value="${v(s.signatory)}" placeholder="e.g. Arjun Reddy, Director"${ro}></label>
+      </div>
+      <div class="small faint" style="margin-top:4px">Numbers look like <b>${esc((s.prefix || 'INV') + '/' + r.series + '/' + String(r.next_number).padStart(4, '0'))}</b> and restart each financial year (April). SAC 998366 is the GST code for selling outdoor advertising space.</div>
+      <div class="form-section">Payment details</div>
+      <div class="grid-4">
+        <label class="field"><span>Account name</span><input type="text" name="bank.account_name" maxlength="120" value="${v(s.bank.account_name)}"${ro}></label>
+        <label class="field"><span>Bank</span><input type="text" name="bank.bank_name" maxlength="120" value="${v(s.bank.bank_name)}"${ro}></label>
+        <label class="field"><span>Account number</span><input type="text" name="bank.account_number" maxlength="20" inputmode="numeric" value="${v(s.bank.account_number)}"${ro}></label>
+        <label class="field"><span>IFSC</span><input type="text" name="bank.ifsc" maxlength="11" value="${v(s.bank.ifsc)}" style="text-transform:uppercase"${ro}></label>
+        <label class="field"><span>Branch</span><input type="text" name="bank.branch" maxlength="120" value="${v(s.bank.branch)}"${ro}></label>
+        <label class="field"><span>UPI ID</span><input type="text" name="upi.vpa" maxlength="100" value="${v(s.upi.vpa)}" placeholder="yourname@okhdfcbank"${ro}></label>
+        <label class="field" style="grid-column:span 2"><span>Name shown in UPI apps</span><input type="text" name="upi.name" maxlength="50" value="${v(s.upi.name)}" placeholder="${v(sel.legal_name)}"${ro}></label>
+      </div>
+      <div class="small faint" style="margin-top:4px">With a UPI ID, every invoice carries a QR code for the exact amount still due: the client scans it with any UPI app.</div>
+      <label class="field mt"><span>Terms and notes printed on every invoice</span><textarea name="notes" rows="2" maxlength="2000"${ro}>${v(s.notes)}</textarea></label>
+    </div>
+    ${can('admin') ? '<div class="modal-foot"><button class="btn primary" type="submit">Save invoice details</button></div>' : ''}`;
+  $('.dash-grid', root).append(card);
+  if (location.hash === '#invoice-details') card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  card.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = formData(card);
+    const body = { bank: {}, upi: {} };
+    for (const [k, x] of Object.entries(d)) { const [a, b] = k.split('.'); if (b) body[a][b] = x; else body[a] = x; }
+    busy($('button[type=submit]', card), async () => {
+      try { await put('/invoices/settings', body); toast('Invoice details saved', 'ok'); } catch (err) { toastError(err); }
     });
   });
 }

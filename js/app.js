@@ -20,6 +20,10 @@ const VIEWS = {
   '/team': () => import('./views/team.js'),
   '/settings': () => import('./views/settings.js'),
   '/billing': () => import('./views/billing.js'),
+  '/reports': () => import('./views/reports.js'),
+  '/reports/print': () => import('./views/reports-print.js'),
+  '/invoices': () => import('./views/invoices.js'),
+  '/invoices/:id': () => import('./views/invoices.js'),
   '/admin': () => import('./views/admin.js'),
   '/admin/companies/:id': () => import('./views/admin.js'),
   '/admin/access': () => import('./views/admin-access.js'),
@@ -31,6 +35,8 @@ const VIEWS = {
 
 // Sign-in pages: no shell, open without a session.
 const AUTH_PAGES = new Set(['/login', '/reset/:token']);
+// Signed-in pages drawn without the app's sidebar: documents for printing.
+const BARE = new Set(['/reports/print']);
 
 // Views that fill the screen edge to edge (no page padding).
 const FULL = new Set(['/map']);
@@ -93,7 +99,7 @@ function navHtml(path) {
   let html = '';
   if (inCompany()) {
     html += link('/map', 'map', 'Map') + link('/dashboard', 'dashboard', 'Dashboard') + link('/inventory', 'list', 'Inventory') +
-      link('/bookings', 'calendar', 'Bookings') + (can('manager') ? link('/pnl', 'chart', 'Profit & loss') : '') +
+      link('/bookings', 'calendar', 'Bookings') + (can('manager') ? link('/pnl', 'chart', 'Profit & loss') + link('/reports', 'trend', 'Reports') + link('/invoices', 'file', 'Invoices') : '') +
       link('/requests', 'inbox', 'Customer requests', b.requests) +
       link('/issues', 'alert', 'Problem reports', b.issues) + link('/shares', 'share', 'Share links') +
       '<a href="/p/' + esc(store.company.slug) + '" target="_blank" rel="noopener">' + icon('globe') + '<span>Our public page</span></a>' +
@@ -226,7 +232,7 @@ async function render() {
 
   const app = $('#app');
   let target;
-  if (AUTH_PAGES.has(found.pattern)) {
+  if (AUTH_PAGES.has(found.pattern) || BARE.has(found.pattern)) {
     app.innerHTML = '';
     target = app;
   } else {

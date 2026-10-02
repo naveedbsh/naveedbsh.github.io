@@ -6,7 +6,7 @@ A live demo of HoardHub - outdoor-media inventory, bookings, profit & loss and a
 
 - The public marketplace is the home page: search, filter by place, type and dates, open a listing, send an enquiry.
 - **Owner sign in** (every demo login uses the password `password123`):
-  - `admin@metro-outdoor.local` - company admin (map, bookings, profit & loss, customer requests, plan & billing with a renewal due)
+  - `admin@metro-outdoor.local` - company admin (map, bookings, profit & loss, reports with Excel and PDF downloads, invoices with a UPI QR, customer requests, plan & billing with a renewal due)
   - `manager@metro-outdoor.local`, `viewer@metro-outdoor.local` - the other roles
   - `super@hoardhub.local` - platform admin (all companies, plans & billing, coupons, automations and webhooks, platform settings)
 

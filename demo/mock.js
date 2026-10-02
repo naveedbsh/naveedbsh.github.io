@@ -215,6 +215,100 @@
     return ok({ days, items });
   }
 
+  /* -------------------------------------------------------------- reports */
+  // The same rules as the server's reports (src/services/reports.js), worked
+  // out here from the captured bookings, so every filter works in the demo.
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthEnd = (k) => { const [y, m] = k.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
+  const nextMonth = (k) => { const [y, m] = k.split('-').map(Number); return new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7); };
+  const overlap = (a1, a2, b1, b2) => { const s = a1 > b1 ? a1 : b1; const e = a2 < b2 ? a2 : b2; return s > e ? 0 : daysBetween(s, e); };
+  function covered(intervals, from, to) {
+    const list = intervals.map(([s, e]) => [s < from ? from : s, e > to ? to : e]).filter(([s, e]) => s <= e).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    let total = 0; let cur = null;
+    for (const [s, e] of list) { if (cur && s <= addDays(cur[1], 1)) { if (e > cur[1]) cur[1] = e; continue; } if (cur) total += daysBetween(cur[0], cur[1]); cur = [s, e]; }
+    return cur ? total + daysBetween(cur[0], cur[1]) : total;
+  }
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const ckey = (n) => lc(n).trim().replace(/\s+/g, ' ');
+
+  function report(co, q, today) {
+    const from = q.from || today; const to = q.to || today;
+    if (to < from) return fail(400, 'The end date is before the start date');
+    const f = { city: q.city || '', area: q.area || '', type: q.type || '', client: q.client || '' };
+    const base = co.reportBase;
+    const boards = new Map(base.boards.filter((b) => (!f.city || b.city === f.city) && (!f.area || b.area === f.area) && (!f.type || b.type === f.type))
+      .map((b) => [b.id, { ...b, revenue: 0, booked_days: 0, days: 0, intervals: [], bookings: 0 }]));
+    const want = ckey(f.client);
+    const bookings = co.bookings.filter((b) => b.status === 'confirmed' && b.start_date <= to && b.end_date >= from && boards.has(b.medium_id) && (!want || ckey(b.client_name) === want))
+      .map((b) => ({ ...b, amount: Number(b.amount) || 0, amount_paid: Number(b.amount_paid) || 0 }));
+    const months = [];
+    for (let k = from.slice(0, 7); k <= to.slice(0, 7); k = nextMonth(k)) {
+      const s = k + '-01' < from ? from : k + '-01'; const e = monthEnd(k) > to ? to : monthEnd(k);
+      months.push({ key: k, label: MONTHS[Number(k.slice(5)) - 1] + ' ' + k.slice(0, 4), from: s, to: e, revenue: 0, billed: 0, collected: 0, booked_days: 0, days: 0 });
+    }
+    const clients = new Map(); const dues = [];
+    let revenue = 0; let billed = 0; let collected = 0; let started = 0;
+    for (const b of bookings) {
+      const perDay = b.amount / daysBetween(b.start_date, b.end_date);
+      let earned = 0;
+      for (const m of months) { const d = overlap(b.start_date, b.end_date, m.from, m.to); if (d) { m.revenue += perDay * d; earned += perDay * d; } }
+      const board = boards.get(b.medium_id);
+      board.revenue += earned; board.intervals.push([b.start_date, b.end_date]); board.bookings++;
+      revenue += earned;
+      const k = ckey(b.client_name);
+      const c = clients.get(k) || { client: b.client_name.trim(), revenue: 0, bookings: 0, billed: 0, paid: 0, due: 0, boards: new Set() };
+      c.revenue += earned; c.bookings++; c.boards.add(b.medium_id); clients.set(k, c);
+      if (b.start_date >= from) {
+        started++; billed += b.amount; collected += b.amount_paid; c.billed += b.amount; c.paid += b.amount_paid;
+        const m = months.find((x) => x.key === b.start_date.slice(0, 7));
+        if (m) { m.billed += b.amount; m.collected += b.amount_paid; }
+        const due = r2(b.amount - b.amount_paid);
+        if (due > 0.004) {
+          c.due += due;
+          const inv = co.invoiceOf[b.id] || null;
+          const dueDate = inv ? inv.due_date : b.start_date;
+          const late = daysBetween(dueDate, today) - 1;
+          dues.push({ booking_id: b.id, medium_id: b.medium_id, code: board.code, title: board.title, client: b.client_name, campaign: b.campaign, start_date: b.start_date, end_date: b.end_date,
+            amount: b.amount, paid: b.amount_paid, due, due_date: dueDate, days_late: Math.max(0, late), invoice: inv,
+            bucket: late <= 0 ? 'not_due' : late <= 30 ? 'd0_30' : late <= 60 ? 'd31_60' : late <= 90 ? 'd61_90' : 'd90' });
+        }
+      }
+    }
+    let bookedDays = 0; let sellDays = 0;
+    for (const b of boards.values()) {
+      if (b.status === 'inactive' && !b.intervals.length) continue;
+      const start = b.since > from ? b.since : from;
+      if (start > to) continue;
+      b.days = daysBetween(start, to); b.booked_days = covered(b.intervals, start, to);
+      bookedDays += b.booked_days; sellDays += b.days;
+      for (const m of months) { const s = start > m.from ? start : m.from; if (s > m.to) continue; m.days += daysBetween(s, m.to); m.booked_days += covered(b.intervals, s, m.to); }
+    }
+    const occ = (b, d) => (d ? Math.round((b / d) * 100) : null);
+    const rows = [...boards.values()].filter((b) => !want || b.bookings).map((b) => ({ ...b, intervals: undefined, revenue: r2(b.revenue), occupancy: occ(b.booked_days, b.days), achieved_month: b.booked_days ? r2((b.revenue / b.booked_days) * 30.4375) : null }));
+    const group = (keyOf, labelOf) => {
+      const map = new Map();
+      for (const r of rows) { const k = keyOf(r); const g = map.get(k) || { key: k, label: labelOf(r), boards: 0, revenue: 0, booked_days: 0, days: 0 }; g.boards++; g.revenue += r.revenue; g.booked_days += r.booked_days; g.days += r.days; map.set(k, g); }
+      return [...map.values()].map((g) => ({ ...g, revenue: r2(g.revenue), occupancy: occ(g.booked_days, g.days) })).sort((a, b) => b.revenue - a.revenue || a.label.localeCompare(b.label));
+    };
+    const status = { available: 0, on_hold: 0, booked: 0, maintenance: 0, inactive: 0 };
+    for (const r of rows) status[r.status] = (status[r.status] || 0) + 1;
+    const AGING = [['not_due', 'Not due yet'], ['d0_30', '1–30 days'], ['d31_60', '31–60 days'], ['d61_90', '61–90 days'], ['d90', 'Over 90 days']];
+    const aging = Object.fromEntries(AGING.map(([k]) => [k, 0]));
+    for (const d of dues) aging[d.bucket] = r2(aging[d.bucket] + d.due);
+    return ok({
+      options: base.options, from, to, today, filters: f,
+      totals: { revenue: r2(revenue), bookings: bookings.length, started, billed: r2(billed), collected: r2(collected), due: r2(billed - collected),
+        overdue: r2(dues.filter((d) => d.bucket !== 'not_due').reduce((s, d) => s + d.due, 0)), collection_rate: billed > 0 ? Math.round((collected / billed) * 100) : null,
+        occupancy: occ(bookedDays, sellDays), boards: rows.length, booked_days: bookedDays, achieved_month: bookedDays ? r2((revenue / bookedDays) * 30.4375) : null, clients: clients.size },
+      months: months.map((m) => ({ key: m.key, label: m.label, from: m.from, to: m.to, partial: m.to > today || m.to < monthEnd(m.key), revenue: r2(m.revenue), billed: r2(m.billed), collected: r2(m.collected), occupancy: occ(m.booked_days, m.days) })),
+      by_type: group((r) => r.type, (r) => r.type_label), by_city: group((r) => r.city || '', (r) => r.city || 'No city'),
+      by_area: group((r) => (r.city || '') + '|' + (r.area || ''), (r) => [r.area, r.city].filter(Boolean).join(', ') || 'No area'),
+      by_client: [...clients.values()].map((c) => ({ client: c.client, revenue: r2(c.revenue), bookings: c.bookings, boards: c.boards.size, billed: r2(c.billed), paid: r2(c.paid), due: r2(c.due), share: revenue > 0 ? Math.round((c.revenue / revenue) * 100) : 0 })).sort((a, b) => b.revenue - a.revenue),
+      boards: rows, status, dues: dues.sort((a, b) => b.days_late - a.days_late || b.due - a.due),
+      aging: AGING.map(([key, label]) => ({ key, label, amount: aging[key] })),
+    });
+  }
+
   /* --------------------------------------------------------------- router */
   async function route(url, init) {
     const method = String(init.method || 'GET').toUpperCase();
@@ -273,6 +367,7 @@
       return reply(201, { id: 9100, token: common.demoShareReceipt, url: location.origin + '/r/' + common.demoShareReceipt });
     }
     if (/^\/public\/share\/[\w-]+\/issue$/.test(p) && method === 'POST') return reply(201, { ok: true });
+    if ((m = p.match(/^\/public\/invoice\/([a-f0-9]{32})$/))) { const d = await tryLoad('invoice-' + m[1]); return d ? ok(d) : fail(404, 'This invoice link is not valid'); }
     if ((m = p.match(/^\/public\/request\/([a-f0-9]+)$/))) { const r = await tryLoad('receipt-' + m[1]); return r ? ok(r) : fail(404, 'Request not found'); }
     if (/^\/public\/request\/[a-f0-9]+\/files$/.test(p)) return fail(403, READ_ONLY);
 
@@ -366,6 +461,21 @@
       const b = clone(co.billing);
       // Buying, and the money side, are for the company's admins (as on the server).
       return ok(rank >= RANK.admin ? b : { ...b, can_pay: false, plans: [], pay: null, payments: [] });
+    }
+    if (p === '/reports' || p.startsWith('/invoices')) {
+      if (rank < RANK.manager) return fail(403, 'This needs manager access');
+      if (p === '/reports') return report(co, q, today);
+      if (p === '/invoices/settings') return ok(co.invoiceSettings);
+      if (p === '/invoices/billable') return ok(co.billable);
+      if (p === '/invoices') {
+        const text = lc(q.q).trim();
+        const rows = co.invoices.filter((i) => (!text || lc(i.number).includes(text) || lc(i.client_name).includes(text)) &&
+          (!q.state || (q.state === 'overdue' ? i.overdue : q.state === 'open' ? ['unpaid', 'partial'].includes(i.state) : i.state === q.state)));
+        const live = rows.filter((i) => i.state !== 'cancelled');
+        const sum = (arr, k) => r2(arr.reduce((s, i) => s + i[k], 0));
+        return ok({ invoices: rows, totals: { count: live.length, invoiced: sum(live, 'total'), paid: sum(live, 'paid'), due: sum(live, 'due'), overdue: sum(live.filter((i) => i.overdue), 'due') } });
+      }
+      if ((m = p.match(/^\/invoices\/(\d+)$/))) { const d = await tryLoad('c' + cid + '-invoice-' + m[1]); return d ? ok(d) : fail(404, 'Invoice not found'); }
     }
     if (p === '/billing/quote') {
       if (rank < RANK.admin) return fail(403, 'This needs admin access');
